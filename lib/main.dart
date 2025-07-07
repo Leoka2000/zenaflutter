@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'screens/auth/login_page.dart';
 import 'screens/auth/register_page.dart';
+import 'screens/main/dashboard.dart';
 
 void main() {
   runApp(MyApp());
@@ -17,6 +18,7 @@ class MyApp extends StatelessWidget {
         '/': (context) => MainPage(),
         '/login': (context) => LoginPage(),
         '/register': (context) => RegisterPage(),
+        '/dashboard': (context) => DashboardPage(), // <- Add this
       },
     );
   }
