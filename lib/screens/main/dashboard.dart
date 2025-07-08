@@ -2,6 +2,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:intl/intl.dart';
+import 'package:location/location.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class DashboardPage extends StatefulWidget {
   @override
@@ -23,101 +25,118 @@ class _DashboardPageState extends State<DashboardPage> {
   double? _temperature;
   int? _timestamp;
 
-  void _startScanAndConnect() {
-    setState(() {
-      _status = "Scanning...";
-    });
+  Future<bool> _checkPermissionsAndLocation() async {
+    final permissions = [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ];
+
+    final statuses = await permissions.request();
+    final permissionsGranted = statuses.values.every(
+      (status) => status.isGranted,
+    );
+
+    final location = Location();
+    bool locationEnabled = await location.serviceEnabled();
+    if (!locationEnabled) {
+      locationEnabled = await location.requestService();
+    }
+
+    return permissionsGranted && locationEnabled;
+  }
+
+  void _startScanAndConnect() async {
+    final ready = await _checkPermissionsAndLocation();
+
+    if (!ready) {
+      setState(() => _status = "Permissions or Location not available");
+      return;
+    }
+
+    setState(() => _status = "Scanning...");
 
     flutterReactiveBle
-        .scanForDevices(withServices: [serviceUuid])
+        .scanForDevices(withServices: [])
         .listen(
-          (device) async {
-            setState(() {
-              _status = "Connecting to ${device.name}...";
-            });
+          (device) {
+            if (_connectedDevice == null && device.name.isNotEmpty) {
+              print("Found device: ${device.name} (${device.id})");
 
-            flutterReactiveBle.connectToDevice(id: device.id).listen((
-              connectionState,
-            ) {
-              if (connectionState.connectionState ==
-                  DeviceConnectionState.connected) {
-                setState(() {
-                  _status = "Connected!";
-                  _connectedDevice = device;
-                });
+              setState(() {
+                _connectedDevice = device;
+                _status = "Connecting to ${device.name}...";
+              });
 
-                _subscribeToCharacteristic(device.id);
-              }
-            });
-
-            flutterReactiveBle.deinitialize(); // Stop scanning
+              flutterReactiveBle
+                  .connectToDevice(id: device.id)
+                  .listen(
+                    (connectionState) {
+                      if (connectionState.connectionState ==
+                          DeviceConnectionState.connected) {
+                        setState(() => _status = "Connected to ${device.name}");
+                        _subscribeToCharacteristic(device.id);
+                      }
+                    },
+                    onError: (e) {
+                      setState(() => _status = "Connection failed: $e");
+                    },
+                  );
+            }
           },
-          onError: (error) {
-            setState(() {
-              _status = "Error scanning: $error";
-            });
+          onError: (e) {
+            setState(() => _status = "Scan error: $e");
           },
         );
   }
 
   void _subscribeToCharacteristic(String deviceId) {
-    setState(() {
-      _status = "Subscribing to data...";
-    });
+    setState(() => _status = "Subscribing to data...");
 
-    _dataStream = flutterReactiveBle.subscribeToCharacteristic(
-      QualifiedCharacteristic(
-        serviceId: serviceUuid,
-        characteristicId: characteristicUuid,
-        deviceId: deviceId,
-      ),
+    final characteristic = QualifiedCharacteristic(
+      serviceId: serviceUuid,
+      characteristicId: characteristicUuid,
+      deviceId: deviceId,
     );
+
+    _dataStream = flutterReactiveBle.subscribeToCharacteristic(characteristic);
 
     _dataStream!.listen(
       (data) {
-        if (data.isNotEmpty) {
-          _handleHexData(data);
+        if (data.length >= 6) {
+          _parseData(data);
+        } else {
+          setState(() => _status = "Invalid data received");
         }
       },
-      onError: (error) {
-        setState(() {
-          _status = "Error receiving data: $error";
-        });
+      onError: (e) {
+        setState(() => _status = "Error receiving data: $e");
       },
     );
   }
 
-  void _handleHexData(List<int> data) {
-    // Convert List<int> to hex string
-    String hexString =
-        "0x" + data.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
-
+  void _parseData(List<int> data) {
     try {
-      final cleanHex = hexString.substring(2);
-      final timestampHex = cleanHex.substring(0, 8);
-      final temperatureHex = cleanHex.substring(8, 12);
+      final byteData = ByteData.sublistView(Uint8List.fromList(data));
 
-      final timestamp = int.parse(timestampHex, radix: 16);
-      final temp = int.parse(temperatureHex, radix: 16) / 10;
+      final timestamp = byteData.getUint32(0, Endian.big);
+      final temperatureRaw = byteData.getInt16(4, Endian.big);
+      final temperature = temperatureRaw / 10;
 
       setState(() {
         _timestamp = timestamp;
-        _temperature = temp;
-        _status = "Receiving data...";
+        _temperature = temperature;
+        _status = "Data received";
       });
     } catch (e) {
-      setState(() {
-        _status = "Failed to parse data";
-      });
+      setState(() => _status = "Data parse error: $e");
     }
   }
 
   String _formatTimestamp(int? timestamp) {
     if (timestamp == null) return "N/A";
-
     final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
-    final format = DateFormat("yyyy-MM-dd HH:mm:ss");
-    return format.format(date.toLocal());
+    return DateFormat("yyyy-MM-dd HH:mm:ss").format(date.toLocal());
   }
 
   @override
