@@ -12,13 +12,12 @@ class _RegisterPageState extends State<RegisterPage> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
 
   bool _isLoading = false;
 
   Future<void> registerUser() async {
-    final url = Uri.parse(
-      'http://10.0.2.2:8000/api/register',
-    ); // Adjust if needed
+    final url = Uri.parse('http://10.0.2.2:8000/api/register');
 
     setState(() {
       _isLoading = true;
@@ -31,15 +30,14 @@ class _RegisterPageState extends State<RegisterPage> {
           'name': _nameController.text.trim(),
           'email': _emailController.text.trim(),
           'password': _passwordController.text,
+          'password_confirmation': _confirmPasswordController.text,
         },
       );
 
       final responseData = json.decode(response.body);
       if (response.statusCode == 200 && responseData['status'] == 200) {
-        // Registration successful
         Navigator.pushReplacementNamed(context, '/dashboard');
       } else {
-        // Show error
         showDialog(
           context: context,
           builder: (_) => AlertDialog(
@@ -81,6 +79,7 @@ class _RegisterPageState extends State<RegisterPage> {
     _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
+    _confirmPasswordController.dispose();
     super.dispose();
   }
 
@@ -124,6 +123,18 @@ class _RegisterPageState extends State<RegisterPage> {
                 obscureText: true,
                 validator: (value) => value!.length < 6
                     ? 'Password must be at least 6 characters'
+                    : null,
+              ),
+              SizedBox(height: 16),
+              TextFormField(
+                controller: _confirmPasswordController,
+                decoration: InputDecoration(
+                  labelText: 'Confirm Password',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+                validator: (value) => value != _passwordController.text
+                    ? 'Passwords do not match'
                     : null,
               ),
               SizedBox(height: 32),
