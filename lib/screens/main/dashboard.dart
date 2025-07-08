@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -20,10 +21,14 @@ class _DashboardPageState extends State<DashboardPage> {
 
   DiscoveredDevice? _connectedDevice;
   Stream<List<int>>? _dataStream;
+  StreamSubscription<DiscoveredDevice>? _scanSubscription;
+  StreamSubscription<ConnectionStateUpdate>? _connectionSubscription;
+  StreamSubscription<List<int>>? _dataSubscription;
 
   String _status = "Disconnected";
   double? _temperature;
   int? _timestamp;
+  int _scanCount = 0;
 
   Future<bool> _checkPermissionsAndLocation() async {
     final permissions = [
@@ -47,6 +52,7 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   void _startScanAndConnect() async {
+    print("=== Starting BLE scan ===");
     final ready = await _checkPermissionsAndLocation();
 
     if (!ready) {
@@ -54,38 +60,66 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
 
+    _scanCount = 0;
     setState(() => _status = "Scanning...");
 
-    flutterReactiveBle
+    _scanSubscription = flutterReactiveBle
         .scanForDevices(withServices: [])
         .listen(
           (device) {
-            if (_connectedDevice == null && device.name.isNotEmpty) {
-              print("Found device: ${device.name} (${device.id})");
+            _scanCount++;
+            print("[$_scanCount] Found device: ${device.name} (${device.id})");
+
+            // Show unnamed devices too for debugging
+            if (_connectedDevice == null) {
+              if (device.name.isNotEmpty) {
+                print("🟢 Connecting to: ${device.name} (${device.id})");
+              } else {
+                print("🟡 Skipping unnamed device: ${device.id}");
+              }
 
               setState(() {
                 _connectedDevice = device;
-                _status = "Connecting to ${device.name}...";
+                _status =
+                    "Connecting to ${device.name.isNotEmpty ? device.name : device.id}...";
               });
 
-              flutterReactiveBle
-                  .connectToDevice(id: device.id)
-                  .listen(
-                    (connectionState) {
-                      if (connectionState.connectionState ==
-                          DeviceConnectionState.connected) {
-                        setState(() => _status = "Connected to ${device.name}");
-                        _subscribeToCharacteristic(device.id);
-                      }
-                    },
-                    onError: (e) {
-                      setState(() => _status = "Connection failed: $e");
-                    },
-                  );
+              _connectToDevice(device);
+              _scanSubscription
+                  ?.cancel(); // Stop scanning once a device is chosen
             }
           },
           onError: (e) {
+            print("❌ Scan error: $e");
             setState(() => _status = "Scan error: $e");
+          },
+        );
+
+    // Stop scan after 15 seconds to avoid infinite scanning
+    Future.delayed(Duration(seconds: 15), () {
+      if (_connectedDevice == null) {
+        _scanSubscription?.cancel();
+        setState(() => _status = "Scan timeout. No device found.");
+        print("⚠️ Scan timed out. No BLE device connected.");
+      }
+    });
+  }
+
+  void _connectToDevice(DiscoveredDevice device) {
+    _connectionSubscription = flutterReactiveBle
+        .connectToDevice(id: device.id)
+        .listen(
+          (connectionState) {
+            print("🔌 Connection state: ${connectionState.connectionState}");
+            if (connectionState.connectionState ==
+                DeviceConnectionState.connected) {
+              setState(() => _status = "Connected to ${device.name}");
+              _subscribeToCharacteristic(device.id);
+            }
+          },
+          onError: (e) {
+            print("❌ Connection failed: $e");
+            setState(() => _status = "Connection failed: $e");
           },
         );
   }
@@ -101,15 +135,19 @@ class _DashboardPageState extends State<DashboardPage> {
 
     _dataStream = flutterReactiveBle.subscribeToCharacteristic(characteristic);
 
-    _dataStream!.listen(
+    _dataSubscription = _dataStream!.listen(
       (data) {
+        print("📦 Raw data received: $data");
+
         if (data.length >= 6) {
           _parseData(data);
         } else {
           setState(() => _status = "Invalid data received");
+          print("⚠️ Invalid data length: ${data.length}");
         }
       },
       onError: (e) {
+        print("❌ Data receive error: $e");
         setState(() => _status = "Error receiving data: $e");
       },
     );
@@ -123,12 +161,16 @@ class _DashboardPageState extends State<DashboardPage> {
       final temperatureRaw = byteData.getInt16(4, Endian.big);
       final temperature = temperatureRaw / 10;
 
+      print("🕒 Parsed timestamp: $timestamp → ${_formatTimestamp(timestamp)}");
+      print("🌡️ Parsed temperature: $temperature °C");
+
       setState(() {
         _timestamp = timestamp;
         _temperature = temperature;
         _status = "Data received";
       });
     } catch (e) {
+      print("❌ Parse error: $e");
       setState(() => _status = "Data parse error: $e");
     }
   }
@@ -137,6 +179,14 @@ class _DashboardPageState extends State<DashboardPage> {
     if (timestamp == null) return "N/A";
     final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
     return DateFormat("yyyy-MM-dd HH:mm:ss").format(date.toLocal());
+  }
+
+  @override
+  void dispose() {
+    _scanSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    _dataSubscription?.cancel();
+    super.dispose();
   }
 
   @override
@@ -152,6 +202,8 @@ class _DashboardPageState extends State<DashboardPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text('Status: $_status', style: TextStyle(fontSize: 16)),
+            SizedBox(height: 8),
+            Text('Scan attempts: $_scanCount'),
             SizedBox(height: 16),
             ElevatedButton(
               onPressed: _startScanAndConnect,
