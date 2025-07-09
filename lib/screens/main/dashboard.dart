@@ -19,8 +19,9 @@ class _DashboardPageState extends State<DashboardPage> {
     "abcdefab-1234-5678-9abc-def123456789",
   );
 
+  final String _targetDeviceName = "MySensor";
+
   DiscoveredDevice? _connectedDevice;
-  Stream<List<int>>? _dataStream;
   StreamSubscription<DiscoveredDevice>? _scanSubscription;
   StreamSubscription<ConnectionStateUpdate>? _connectionSubscription;
   StreamSubscription<List<int>>? _dataSubscription;
@@ -36,7 +37,6 @@ class _DashboardPageState extends State<DashboardPage> {
       Permission.bluetoothConnect,
       Permission.location,
     ];
-
     final statuses = await permissions.request();
     final permissionsGranted = statuses.values.every(
       (status) => status.isGranted,
@@ -51,134 +51,146 @@ class _DashboardPageState extends State<DashboardPage> {
     return permissionsGranted && locationEnabled;
   }
 
-  void _startScanAndConnect() async {
-    print("=== Starting BLE scan ===");
+  Future<void> _startScanAndConnect() async {
     final ready = await _checkPermissionsAndLocation();
-
     if (!ready) {
-      setState(() => _status = "Permissions or Location not available");
+      setState(() => _status = "Permissions or location service missing");
       return;
     }
 
-    _scanCount = 0;
-    setState(() => _status = "Scanning...");
+    setState(() {
+      _status = "Scanning...";
+      _scanCount = 0;
+      _connectedDevice = null;
+    });
+
+    final foundDevices = <String, DiscoveredDevice>{};
 
     _scanSubscription = flutterReactiveBle
-        .scanForDevices(withServices: [])
+        .scanForDevices(withServices: []) // empty list means scan all
         .listen(
           (device) {
-            _scanCount++;
-            print("[$_scanCount] Found device: ${device.name} (${device.id})");
+            if (!foundDevices.containsKey(device.id)) {
+              foundDevices[device.id] = device;
+              _scanCount++;
+              print("🔍 Found device: ${device.name} (${device.id})");
 
-            // Show unnamed devices too for debugging
-            if (_connectedDevice == null) {
-              if (device.name.isNotEmpty) {
-                print("🟢 Connecting to: ${device.name} (${device.id})");
-              } else {
-                print("🟡 Skipping unnamed device: ${device.id}");
+              if (device.name == _targetDeviceName) {
+                _scanSubscription?.cancel();
+                _connectToDevice(device);
               }
-
-              setState(() {
-                _connectedDevice = device;
-                _status =
-                    "Connecting to ${device.name.isNotEmpty ? device.name : device.id}...";
-              });
-
-              _connectToDevice(device);
-              _scanSubscription
-                  ?.cancel(); // Stop scanning once a device is chosen
             }
           },
           onError: (e) {
+            setState(() => _status = "Scan failed: $e");
             print("❌ Scan error: $e");
-            setState(() => _status = "Scan error: $e");
           },
         );
 
-    // Stop scan after 15 seconds to avoid infinite scanning
-    Future.delayed(Duration(seconds: 15), () {
-      if (_connectedDevice == null) {
-        _scanSubscription?.cancel();
-        setState(() => _status = "Scan timeout. No device found.");
-        print("⚠️ Scan timed out. No BLE device connected.");
+    await Future.delayed(Duration(seconds: 10));
+    if (_connectedDevice == null) {
+      await _scanSubscription?.cancel();
+
+      if (foundDevices.isNotEmpty) {
+        final fallbackDevice = foundDevices.values.first;
+        print(
+          "⚠️ Target not found, connecting to first found device: ${fallbackDevice.name}",
+        );
+        _connectToDevice(fallbackDevice);
+      } else {
+        setState(() => _status = "No BLE devices found");
       }
-    });
+    }
   }
 
   void _connectToDevice(DiscoveredDevice device) {
+    setState(() => _status = "Connecting to ${device.name}...");
     _connectionSubscription = flutterReactiveBle
-        .connectToDevice(id: device.id)
+        .connectToDevice(
+          id: device.id,
+          servicesWithCharacteristicsToDiscover: {
+            serviceUuid: [characteristicUuid],
+          },
+        )
         .listen(
           (connectionState) {
             print("🔌 Connection state: ${connectionState.connectionState}");
+
             if (connectionState.connectionState ==
                 DeviceConnectionState.connected) {
-              setState(() => _status = "Connected to ${device.name}");
+              setState(() {
+                _connectedDevice = device;
+                _status = "Connected to ${device.name}";
+              });
               _subscribeToCharacteristic(device.id);
+            } else if (connectionState.connectionState ==
+                DeviceConnectionState.disconnected) {
+              setState(() {
+                _status = "Disconnected";
+                _connectedDevice = null;
+              });
             }
           },
           onError: (e) {
-            print("❌ Connection failed: $e");
+            print("❌ Connection error: $e");
             setState(() => _status = "Connection failed: $e");
           },
         );
   }
 
   void _subscribeToCharacteristic(String deviceId) {
-    setState(() => _status = "Subscribing to data...");
-
     final characteristic = QualifiedCharacteristic(
       serviceId: serviceUuid,
       characteristicId: characteristicUuid,
       deviceId: deviceId,
     );
 
-    _dataStream = flutterReactiveBle.subscribeToCharacteristic(characteristic);
+    setState(() => _status = "Subscribing to characteristic...");
 
-    _dataSubscription = _dataStream!.listen(
-      (data) {
-        print("📦 Raw data received: $data");
+    _dataSubscription = flutterReactiveBle
+        .subscribeToCharacteristic(characteristic)
+        .listen(
+          (data) {
+            print("📦 Data received: $data");
 
-        if (data.length >= 6) {
-          _parseData(data);
-        } else {
-          setState(() => _status = "Invalid data received");
-          print("⚠️ Invalid data length: ${data.length}");
-        }
-      },
-      onError: (e) {
-        print("❌ Data receive error: $e");
-        setState(() => _status = "Error receiving data: $e");
-      },
-    );
+            if (data.length >= 6) {
+              _parseData(data);
+            } else {
+              setState(() => _status = "Invalid data length");
+            }
+          },
+          onError: (e) {
+            print("❌ Data subscription error: $e");
+            setState(() => _status = "Failed to subscribe to data");
+          },
+        );
   }
 
   void _parseData(List<int> data) {
     try {
       final byteData = ByteData.sublistView(Uint8List.fromList(data));
-
       final timestamp = byteData.getUint32(0, Endian.big);
-      final temperatureRaw = byteData.getInt16(4, Endian.big);
-      final temperature = temperatureRaw / 10;
-
-      print("🕒 Parsed timestamp: $timestamp → ${_formatTimestamp(timestamp)}");
-      print("🌡️ Parsed temperature: $temperature °C");
+      final tempRaw = byteData.getInt16(4, Endian.big);
+      final temperature = tempRaw / 10.0;
 
       setState(() {
         _timestamp = timestamp;
         _temperature = temperature;
         _status = "Data received";
       });
+
+      print("🕒 Timestamp: ${_formatTimestamp(timestamp)}");
+      print("🌡️ Temperature: $temperature °C");
     } catch (e) {
       print("❌ Parse error: $e");
-      setState(() => _status = "Data parse error: $e");
+      setState(() => _status = "Failed to parse data");
     }
   }
 
-  String _formatTimestamp(int? timestamp) {
-    if (timestamp == null) return "N/A";
-    final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
-    return DateFormat("yyyy-MM-dd HH:mm:ss").format(date.toLocal());
+  String _formatTimestamp(int? ts) {
+    if (ts == null) return "N/A";
+    final dt = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
+    return DateFormat("yyyy-MM-dd HH:mm:ss").format(dt.toLocal());
   }
 
   @override
@@ -193,7 +205,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Dashboard'),
+        title: Text("Dashboard"),
         automaticallyImplyLeading: false,
       ),
       body: Padding(
@@ -201,13 +213,13 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text('Status: $_status', style: TextStyle(fontSize: 16)),
+            Text("Status: $_status", style: TextStyle(fontSize: 16)),
             SizedBox(height: 8),
-            Text('Scan attempts: $_scanCount'),
+            Text("Scan attempts: $_scanCount"),
             SizedBox(height: 16),
             ElevatedButton(
               onPressed: _startScanAndConnect,
-              child: Text('Connect to BLE Device'),
+              child: Text("Connect to BLE Device"),
             ),
             SizedBox(height: 32),
             if (_temperature != null)
