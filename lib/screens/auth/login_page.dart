@@ -5,6 +5,8 @@ import 'dart:convert';
 import '../main/dashboard.dart'; // Adjust the path as needed based on your project structure
 
 class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
   @override
   _LoginPageState createState() => _LoginPageState();
 }
