@@ -2,7 +2,9 @@
 # platform :ios, '12.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+platform :ios, '15.0'
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
 
 project 'Runner', {
   'Debug' => :debug,
@@ -38,6 +40,8 @@ end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
-    flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['SWIFT_VERSION'] = '5.9'
+    end
   end
 end
