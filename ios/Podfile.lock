@@ -6,11 +6,12 @@ PODS:
     - FlutterMacOS
     - Protobuf (~> 3.5)
     - SwiftProtobuf (~> 1.0)
-  - SwiftProtobuf (1.30.0)
+  - SwiftProtobuf (1.25.2)
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
   - reactive_ble_mobile (from `.symlinks/plugins/reactive_ble_mobile/darwin`)
+  - SwiftProtobuf (= 1.25.2)
 
 SPEC REPOS:
   trunk:
@@ -27,8 +28,8 @@ SPEC CHECKSUMS:
   Flutter: e0871f40cf51350855a761d2e70bf5af5b9b5de7
   Protobuf: 164aea2ae380c3951abdc3e195220c01d17400e0
   reactive_ble_mobile: ea97709e18fa6f0b0592909725d7ae7e1c595b64
-  SwiftProtobuf: 3697407f0d5b23bedeba9c2eaaf3ec6fdff69349
+  SwiftProtobuf: 407a385e97fd206c4fbe880cc84123989167e0d1
 
-PODFILE CHECKSUM: 6378cca5e0efc78e0366bb96b97da99edde7cce2
+PODFILE CHECKSUM: 2a7c810c207277923883b515bffc7735e43e5570
 
 COCOAPODS: 1.16.2
