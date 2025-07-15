@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
@@ -27,7 +28,6 @@ class BleTemperatureScreen extends StatefulWidget {
 
 class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
   final flutterReactiveBle = FlutterReactiveBle();
-
   final Uuid serviceUuid = Uuid.parse("12345678-1234-1234-1234-1234567890ab");
   final Uuid characteristicUuid = Uuid.parse(
     "abcdefab-1234-5678-9abc-def123456789",
@@ -42,6 +42,11 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
   double? temperature;
   int? timestamp;
 
+  final List<FlSpot> _temperaturePoints = [];
+  final int _maxPoints = 100;
+  double _xValue = 0;
+  final double _step = 1;
+
   void _startScan() {
     setState(() {
       status = "Scanning...";
@@ -51,10 +56,6 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
         .scanForDevices(withServices: [serviceUuid])
         .listen(
           (device) {
-            if (device.name.isNotEmpty) {
-              print("Found device: ${device.name} (${device.id})");
-            }
-
             if (device.serviceUuids.contains(serviceUuid)) {
               _device = device;
               _scanSub?.cancel();
@@ -62,8 +63,7 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
             }
           },
           onError: (e) {
-            print("Scan error: $e");
-            setState(() => status = "Scan failed");
+            setState(() => status = "Scan failed: $e");
           },
         );
   }
@@ -78,59 +78,43 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
         )
         .listen(
           (update) {
-            switch (update.connectionState) {
-              case DeviceConnectionState.connected:
-                print("Connected to device.");
-                setState(() => status = "Connected");
-                _subscribeToCharacteristic(device.id);
-                break;
-              case DeviceConnectionState.disconnected:
-                print("Disconnected.");
-                setState(() => status = "Disconnected");
-                break;
-              default:
-                break;
+            if (update.connectionState == DeviceConnectionState.connected) {
+              setState(() => status = "Connected");
+              _subscribeToCharacteristic(device.id);
+            } else if (update.connectionState ==
+                DeviceConnectionState.disconnected) {
+              setState(() => status = "Disconnected");
             }
           },
           onError: (e) {
-            print("Connection error: $e");
-            setState(() => status = "Connection failed");
+            setState(() => status = "Connection failed: $e");
           },
         );
   }
 
   void _subscribeToCharacteristic(String deviceId) {
-    print("Subscribing to characteristic...");
+    final characteristic = QualifiedCharacteristic(
+      serviceId: serviceUuid,
+      characteristicId: characteristicUuid,
+      deviceId: deviceId,
+    );
+
     _notificationSub = flutterReactiveBle
-        .subscribeToCharacteristic(
-          QualifiedCharacteristic(
-            serviceId: serviceUuid,
-            characteristicId: characteristicUuid,
-            deviceId: deviceId,
-          ),
-        )
+        .subscribeToCharacteristic(characteristic)
         .listen(
-          (data) {
-            _handleData(data);
-          },
+          (data) => _handleData(data),
           onError: (e) {
-            print("Notification error: $e");
-            setState(() => status = "Error receiving data");
+            setState(() => status = "Error receiving data: $e");
           },
         );
   }
 
   void _handleData(List<int> data) {
-    if (data.length < 12) {
-      print("Invalid data length: ${data.length}");
-      return;
-    }
+    if (data.length < 12) return;
 
-    // Convert bytes to hex string
     final hexString = data
         .map((b) => b.toRadixString(16).padLeft(2, '0'))
         .join();
-    print("Raw Hex: 0x$hexString");
 
     try {
       final timestampHex = hexString.substring(0, 8);
@@ -142,12 +126,16 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
       setState(() {
         timestamp = ts;
         temperature = temp;
-      });
 
-      print("Parsed Timestamp: $ts");
-      print("Parsed Temperature: $temp °C");
+        if (_temperaturePoints.length >= _maxPoints) {
+          _temperaturePoints.removeAt(0);
+        }
+
+        _temperaturePoints.add(FlSpot(_xValue, temp));
+        _xValue += _step;
+      });
     } catch (e) {
-      print("Failed to parse data: $e");
+      print("Data parsing error: $e");
     }
   }
 
@@ -158,15 +146,9 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
       status = "Disconnected";
       temperature = null;
       timestamp = null;
+      _temperaturePoints.clear();
+      _xValue = 0;
     });
-  }
-
-  @override
-  void dispose() {
-    _scanSub?.cancel();
-    _connectionSub?.cancel();
-    _notificationSub?.cancel();
-    super.dispose();
   }
 
   String _formatTimestamp(int? ts) {
@@ -180,6 +162,54 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
   }
 
   @override
+  void dispose() {
+    _scanSub?.cancel();
+    _connectionSub?.cancel();
+    _notificationSub?.cancel();
+    super.dispose();
+  }
+
+  Widget _buildChart() {
+    if (_temperaturePoints.isEmpty) {
+      return const Center(child: Text("Waiting for data..."));
+    }
+
+    return AspectRatio(
+      aspectRatio: 1.5,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 20.0),
+        child: LineChart(
+          LineChartData(
+            minX: _temperaturePoints.first.x,
+            maxX: _temperaturePoints.last.x,
+            minY: 0,
+            maxY: 100,
+            lineTouchData: const LineTouchData(enabled: false),
+            gridData: FlGridData(
+              show: true,
+              horizontalInterval: 10,
+              getDrawingHorizontalLine: (value) =>
+                  FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
+            ),
+            titlesData: const FlTitlesData(show: false),
+            borderData: FlBorderData(show: false),
+            clipData: const FlClipData.all(),
+            lineBarsData: [
+              LineChartBarData(
+                spots: _temperaturePoints,
+                isCurved: true,
+                barWidth: 3,
+                color: Colors.deepPurple,
+                dotData: const FlDotData(show: false),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("BLE Temperature Monitor")),
@@ -188,7 +218,7 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
         child: Column(
           children: [
             Text("Status: $status", style: const TextStyle(fontSize: 18)),
-            const SizedBox(height: 20),
+            const SizedBox(height: 10),
             if (temperature != null)
               Text(
                 "Temperature: ${temperature!.toStringAsFixed(1)} °C",
@@ -197,13 +227,13 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-            const SizedBox(height: 10),
             if (timestamp != null)
               Text(
                 "Timestamp: ${_formatTimestamp(timestamp)}",
-                style: const TextStyle(fontSize: 18),
+                style: const TextStyle(fontSize: 16),
               ),
-            const Spacer(),
+            const SizedBox(height: 10),
+            Expanded(child: _buildChart()),
             ElevatedButton(
               onPressed: _startScan,
               child: const Text("Scan & Connect"),
