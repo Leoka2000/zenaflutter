@@ -1,11 +1,9 @@
 import 'dart:async';
-
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+void main() => runApp(const MyApp());
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -13,132 +11,211 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Simple BLE Scanner',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Simple BLE Scanner'),
+      title: 'BLE Temperature Monitor',
+      theme: ThemeData(primarySwatch: Colors.deepPurple),
+      home: const BleTemperatureScreen(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  final String title;
+class BleTemperatureScreen extends StatefulWidget {
+  const BleTemperatureScreen({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<BleTemperatureScreen> createState() => _BleTemperatureScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  final FlutterReactiveBle _ble = FlutterReactiveBle();
+class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
+  final flutterReactiveBle = FlutterReactiveBle();
 
-  late StreamSubscription<DiscoveredDevice> _scanSubscription;
-  bool _isScanning = false;
-  final List<DiscoveredDevice> _foundDevices = [];
+  final Uuid serviceUuid = Uuid.parse("12345678-1234-1234-1234-1234567890ab");
+  final Uuid characteristicUuid = Uuid.parse(
+    "abcdefab-1234-5678-9abc-def123456789",
+  );
+
+  DiscoveredDevice? _device;
+  StreamSubscription<DiscoveredDevice>? _scanSub;
+  StreamSubscription<ConnectionStateUpdate>? _connectionSub;
+  StreamSubscription<List<int>>? _notificationSub;
+
+  String status = "Idle";
+  double? temperature;
+  int? timestamp;
 
   void _startScan() {
-    if (_isScanning) {
-      _stopScan();
+    setState(() {
+      status = "Scanning...";
+    });
+
+    _scanSub = flutterReactiveBle
+        .scanForDevices(withServices: [serviceUuid])
+        .listen(
+          (device) {
+            if (device.name.isNotEmpty) {
+              print("Found device: ${device.name} (${device.id})");
+            }
+
+            if (device.serviceUuids.contains(serviceUuid)) {
+              _device = device;
+              _scanSub?.cancel();
+              _connectToDevice(device);
+            }
+          },
+          onError: (e) {
+            print("Scan error: $e");
+            setState(() => status = "Scan failed");
+          },
+        );
+  }
+
+  void _connectToDevice(DiscoveredDevice device) {
+    setState(() => status = "Connecting...");
+
+    _connectionSub = flutterReactiveBle
+        .connectToDevice(
+          id: device.id,
+          connectionTimeout: const Duration(seconds: 10),
+        )
+        .listen(
+          (update) {
+            switch (update.connectionState) {
+              case DeviceConnectionState.connected:
+                print("Connected to device.");
+                setState(() => status = "Connected");
+                _subscribeToCharacteristic(device.id);
+                break;
+              case DeviceConnectionState.disconnected:
+                print("Disconnected.");
+                setState(() => status = "Disconnected");
+                break;
+              default:
+                break;
+            }
+          },
+          onError: (e) {
+            print("Connection error: $e");
+            setState(() => status = "Connection failed");
+          },
+        );
+  }
+
+  void _subscribeToCharacteristic(String deviceId) {
+    print("Subscribing to characteristic...");
+    _notificationSub = flutterReactiveBle
+        .subscribeToCharacteristic(
+          QualifiedCharacteristic(
+            serviceId: serviceUuid,
+            characteristicId: characteristicUuid,
+            deviceId: deviceId,
+          ),
+        )
+        .listen(
+          (data) {
+            _handleData(data);
+          },
+          onError: (e) {
+            print("Notification error: $e");
+            setState(() => status = "Error receiving data");
+          },
+        );
+  }
+
+  void _handleData(List<int> data) {
+    if (data.length < 12) {
+      print("Invalid data length: ${data.length}");
       return;
     }
 
-    setState(() {
-      _foundDevices.clear();
-      _isScanning = true;
-    });
+    // Convert bytes to hex string
+    final hexString = data
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
+    print("Raw Hex: 0x$hexString");
 
-    _scanSubscription = _ble
-        .scanForDevices(
-          withServices: const [], // empty = all devices
-          scanMode: ScanMode.lowLatency,
-        )
-        .listen(
-          (device) {
-            // Avoid duplicates
-            if (!_foundDevices.any((d) => d.id == device.id)) {
-              setState(() {
-                _foundDevices.add(device);
-              });
-            }
-          },
-          onError: (error) {
-            setState(() {
-              _isScanning = false;
-            });
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('Scan error: $error')));
-          },
-        );
+    try {
+      final timestampHex = hexString.substring(0, 8);
+      final temperatureHex = hexString.substring(8, 12);
 
-    // Stop scanning automatically after 10 seconds
-    Future.delayed(const Duration(seconds: 10), () {
-      if (_isScanning) {
-        _stopScan();
-      }
-    });
+      final ts = int.parse(timestampHex, radix: 16);
+      final temp = int.parse(temperatureHex, radix: 16) / 10;
+
+      setState(() {
+        timestamp = ts;
+        temperature = temp;
+      });
+
+      print("Parsed Timestamp: $ts");
+      print("Parsed Temperature: $temp °C");
+    } catch (e) {
+      print("Failed to parse data: $e");
+    }
   }
 
-  void _stopScan() {
-    _scanSubscription.cancel();
+  void _disconnect() {
+    _connectionSub?.cancel();
+    _notificationSub?.cancel();
     setState(() {
-      _isScanning = false;
+      status = "Disconnected";
+      temperature = null;
+      timestamp = null;
     });
   }
 
   @override
   void dispose() {
-    if (_isScanning) {
-      _scanSubscription.cancel();
-    }
+    _scanSub?.cancel();
+    _connectionSub?.cancel();
+    _notificationSub?.cancel();
     super.dispose();
   }
 
-  Widget _buildDeviceTile(DiscoveredDevice device) {
-    final name = device.name.isNotEmpty ? device.name : 'Unknown Device';
-    return ListTile(
-      title: Text(name),
-      subtitle: Text(device.id),
-      trailing: Text(device.rssi.toString()),
-    );
+  String _formatTimestamp(int? ts) {
+    if (ts == null) return "N/A";
+    final dt = DateTime.fromMillisecondsSinceEpoch(
+      ts * 1000,
+      isUtc: true,
+    ).toLocal();
+    return "${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} "
+        "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}";
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
-      body: Column(
-        children: [
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            icon: Icon(_isScanning ? Icons.stop : Icons.search),
-            label: Text(_isScanning ? 'Stop Scanning' : 'Start Scanning'),
-            onPressed: _startScan,
-          ),
-          const SizedBox(height: 16),
-          Expanded(
-            child: _foundDevices.isEmpty
-                ? Center(
-                    child: Text(
-                      _isScanning ? 'Scanning...' : 'No devices found',
-                      style: const TextStyle(fontSize: 18),
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: _foundDevices.length,
-                    separatorBuilder: (_, __) => const Divider(),
-                    itemBuilder: (context, index) {
-                      final device = _foundDevices[index];
-                      return _buildDeviceTile(device);
-                    },
-                  ),
-          ),
-        ],
+      appBar: AppBar(title: const Text("BLE Temperature Monitor")),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            Text("Status: $status", style: const TextStyle(fontSize: 18)),
+            const SizedBox(height: 20),
+            if (temperature != null)
+              Text(
+                "Temperature: ${temperature!.toStringAsFixed(1)} °C",
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            const SizedBox(height: 10),
+            if (timestamp != null)
+              Text(
+                "Timestamp: ${_formatTimestamp(timestamp)}",
+                style: const TextStyle(fontSize: 18),
+              ),
+            const Spacer(),
+            ElevatedButton(
+              onPressed: _startScan,
+              child: const Text("Scan & Connect"),
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: _disconnect,
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              child: const Text("Disconnect"),
+            ),
+          ],
+        ),
       ),
     );
   }
