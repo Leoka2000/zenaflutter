@@ -176,34 +176,98 @@ class _BleTemperatureScreenState extends State<BleTemperatureScreen> {
 
     return AspectRatio(
       aspectRatio: 1.5,
-      child: Padding(
-        padding: const EdgeInsets.only(top: 20.0),
-        child: LineChart(
-          LineChartData(
-            minX: _temperaturePoints.first.x,
-            maxX: _temperaturePoints.last.x,
-            minY: 0,
-            maxY: 100,
-            lineTouchData: const LineTouchData(enabled: false),
-            gridData: FlGridData(
-              show: true,
-              horizontalInterval: 10,
-              getDrawingHorizontalLine: (value) =>
-                  FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
+      child: LineChart(
+        LineChartData(
+          minX: _temperaturePoints.first.x,
+          maxX: _temperaturePoints.last.x,
+          minY: 0,
+          maxY: 100,
+          lineTouchData: LineTouchData(
+            enabled: true,
+            touchTooltipData: LineTouchTooltipData(
+              getTooltipItems: (touchedSpots) {
+                return touchedSpots.map((spot) {
+                  return LineTooltipItem(
+                    '${spot.y.toStringAsFixed(1)} °C\n${spot.x.toStringAsFixed(0)} s',
+                    const TextStyle(color: Colors.white),
+                  );
+                }).toList();
+              },
             ),
-            titlesData: const FlTitlesData(show: false),
-            borderData: FlBorderData(show: false),
-            clipData: const FlClipData.all(),
-            lineBarsData: [
-              LineChartBarData(
-                spots: _temperaturePoints,
-                isCurved: true,
-                barWidth: 3,
-                color: Colors.deepPurple,
-                dotData: const FlDotData(show: false),
-              ),
-            ],
           ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: true,
+            horizontalInterval: 10,
+            verticalInterval: 10,
+            getDrawingHorizontalLine: (value) =>
+                FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
+            getDrawingVerticalLine: (value) =>
+                FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
+          ),
+          titlesData: FlTitlesData(
+            show: true,
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 32,
+                interval: 10,
+                getTitlesWidget: (value, meta) {
+                  return Text(
+                    '${value.toInt()}s',
+                    style: const TextStyle(fontSize: 12),
+                  );
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                interval: 10,
+                getTitlesWidget: (value, meta) {
+                  return Text(
+                    '${value.toInt()}°',
+                    style: const TextStyle(fontSize: 12),
+                  );
+                },
+              ),
+            ),
+            rightTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+            topTitles: const AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          borderData: FlBorderData(
+            show: true,
+            border: const Border(
+              left: BorderSide(color: Colors.black, width: 1),
+              bottom: BorderSide(color: Colors.black, width: 1),
+            ),
+          ),
+          clipData: const FlClipData.all(),
+          lineBarsData: [
+            LineChartBarData(
+              spots: _temperaturePoints,
+              isCurved: true,
+              barWidth: 3,
+              color: Colors.deepPurple,
+              belowBarData: BarAreaData(
+                show: true,
+                gradient: LinearGradient(
+                  colors: [
+                    Colors.deepPurple.withOpacity(0.3),
+                    Colors.transparent,
+                  ],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                ),
+              ),
+              dotData: const FlDotData(show: false),
+            ),
+          ],
         ),
       ),
     );
